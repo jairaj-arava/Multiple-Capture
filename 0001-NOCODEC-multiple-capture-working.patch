@@ -1,0 +1,556 @@
+From 9b88e1d368d42a55afe9e4c15a37c137c2b08c2e Mon Sep 17 00:00:00 2001
+From: jairaj-arava <jairaj.arava@intel.com>
+Date: Thu, 19 Jan 2023 15:18:27 -0800
+Subject: [PATCH] NOCODEC multiple capture working
+
+---
+ tools/topology/topology2/cavs-nocodec.conf    |  89 +++++++++++-
+ tools/topology/topology2/cavs-rt5682.conf     |  10 +-
+ tools/topology/topology2/cavs-sdw.conf        |  10 +-
+ .../include/pipelines/cavs/gain-capture.conf  |  20 ---
+ .../pipelines/cavs/gain-copier-capture.conf   | 132 ++++++++++++++++++
+ .../platform/intel/dmic-generic.conf          | 118 +++++++++++++++-
+ tools/topology/topology2/sof-hda-generic.conf |   7 +
+ 7 files changed, 348 insertions(+), 38 deletions(-)
+ create mode 100644 tools/topology/topology2/include/pipelines/cavs/gain-copier-capture.conf
+
+diff --git a/tools/topology/topology2/cavs-nocodec.conf b/tools/topology/topology2/cavs-nocodec.conf
+index 57e9b7731bb5..1bf6137320f1 100644
+--- a/tools/topology/topology2/cavs-nocodec.conf
++++ b/tools/topology/topology2/cavs-nocodec.conf
+@@ -39,11 +39,13 @@ Define {
+ 	# override DMIC default definitions
+ 	DMIC0_HOST_PIPELINE_ID		13
+ 	DMIC0_DAI_PIPELINE_ID		14
+-	DMIC0_HOST_PIPELINE_SINK	'copier.host.13.1'
+-	DMIC0_DAI_PIPELINE_SRC		'copier.DMIC.14.1'
++	DMIC0_HOST_PIPELINE_SINK	'gain.13.1'
++	DMIC0_DAI_PIPELINE_SRC		'copier.module.14.2'
++	DMIC0_DAI_COPIER		'copier.DMIC.14.1'
++	DMIC0_DAI_GAIN			'gain.14.1'
+ 	DMIC0_NAME			'NoCodec-6'
+ 	DMIC1_NAME			'NoCodec-7'
+-	DMIC0_PCM_CAPS			'Passthrough Capture 13'
++	DMIC0_PCM_CAPS			'Gain Capture 13'
+ 	DMIC0_PIPELINE_STREAM_NAME	'copier.DMIC.14.1'
+ 	PLATFORM 			"none"
+ 	DEEP_BUFFER_PIPELINE_ID		15
+@@ -388,6 +390,64 @@ Object.Pipeline {
+ 			}
+ 		}
+ 	}
++
++	gain-capture.5 {
++		format		$FORMAT
++		index		18
++		Object.Widget.pipeline.1 {
++			stream_name "DMIC0 Raw"
++		}
++		Object.Widget.copier.1 {
++			stream_name "DMIC0 Raw"
++			num_audio_formats 2
++			Object.Base.audio_format.1 {
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++			}
++			Object.Base.audio_format.2 {
++				in_channels		4
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_channels		4
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++				in_ch_cfg	$CHANNEL_CONFIG_3_POINT_1
++				in_ch_map	$CHANNEL_MAP_3_POINT_1
++				out_ch_cfg	$CHANNEL_CONFIG_3_POINT_1
++				out_ch_map	$CHANNEL_MAP_3_POINT_1
++			}
++		}
++		Object.Widget.gain.1 {
++			num_audio_formats 2
++			Object.Base.audio_format.1 {
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++			}
++			Object.Base.audio_format.2 {
++				in_channels		4
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_channels		4
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++				in_ch_cfg	$CHANNEL_CONFIG_3_POINT_1
++				in_ch_map	$CHANNEL_MAP_3_POINT_1
++				out_ch_cfg	$CHANNEL_CONFIG_3_POINT_1
++				out_ch_map	$CHANNEL_MAP_3_POINT_1
++			}
++			Object.Control.mixer.1 {
++				name 'Capture Raw Volume 1'
++			}
++		}
++	}
+ }
+ 
+ Object.PCM {
+@@ -450,6 +510,21 @@ Object.PCM {
+ 			formats 'S16_LE,S24_LE,S32_LE'
+ 		}
+ 	}
++
++	pcm.27 {
++		name	"DMIC0 Raw"
++		id 27
++		direction	"capture"
++		Object.Base.fe_dai."DMIC0 Raw" {}
++
++		Object.PCM.pcm_caps."capture" {
++			name "DMIC0 Raw"
++			# only 32-bit capture supported now
++			formats 'S32_LE'
++			channels_min $NUM_DMICS
++			channels_max $NUM_DMICS
++		}
++	}
+ }
+ 
+ Object.Base {
+@@ -498,12 +573,16 @@ Object.Base {
+ 
+ 	route."10" {
+ 		source	"copier.module.8.2"
+-		sink	"copier.module.7.2"
++		sink	"gain.7.1"
+ 	}
+ 
+ 	route."11" {
+ 		source	"copier.module.8.2"
+-		sink	"copier.module.17.2"
++		sink	"gain.17.1"
+ 	}
+ 
++	route.12 {
++		source	copier.module.14.2
++		sink	gain.18.1
++	}
+ }
+diff --git a/tools/topology/topology2/cavs-rt5682.conf b/tools/topology/topology2/cavs-rt5682.conf
+index 4c2aa971d6cd..d42ed4bc9dbe 100644
+--- a/tools/topology/topology2/cavs-rt5682.conf
++++ b/tools/topology/topology2/cavs-rt5682.conf
+@@ -16,6 +16,8 @@
+ <host-copier-gain-mixin-playback.conf>
+ <mixout-gain-dai-copier-playback.conf>
+ <deepbuffer-playback.conf>
++<dai-copier-gain-module-copier-capture.conf>
++<gain-capture.conf>
+ <data.conf>
+ <pcm.conf>
+ <pcm_caps.conf>
+@@ -43,10 +45,12 @@ Define {
+ 	DMIC1_ID			2
+ 	DMIC0_HOST_PIPELINE_ID		13
+ 	DMIC0_DAI_PIPELINE_ID		14
+-	DMIC0_HOST_PIPELINE_SINK	'copier.host.13.1'
+-	DMIC0_DAI_PIPELINE_SRC		'copier.DMIC.14.1'
++	DMIC0_HOST_PIPELINE_SINK	'gain.13.1'
++	DMIC0_DAI_PIPELINE_SRC		'copier.module.14.2'
++	DMIC0_DAI_COPIER		'copier.DMIC.14.1'
++	DMIC0_DAI_GAIN			'gain.14.1'
+ 	DMIC0_NAME			'dmic01'
+-	DMIC0_PCM_CAPS			'Passthrough Capture 13'
++	DMIC0_PCM_CAPS			'Gain Capture 13'
+ 	DMIC0_PIPELINE_STREAM_NAME	'copier.DMIC.14.1'
+ 	# override BE link ids
+ 	NUM_HDMIS			0
+diff --git a/tools/topology/topology2/cavs-sdw.conf b/tools/topology/topology2/cavs-sdw.conf
+index 086441f7358c..8a0a91ee25bb 100644
+--- a/tools/topology/topology2/cavs-sdw.conf
++++ b/tools/topology/topology2/cavs-sdw.conf
+@@ -11,6 +11,8 @@
+ <virtual.conf>
+ <host-copier-gain-mixin-playback.conf>
+ <mixout-gain-dai-copier-playback.conf>
++<dai-copier-gain-module-copier-capture.conf>
++<gain-capture.conf>
+ <deepbuffer-playback.conf>
+ <passthrough-playback.conf>
+ <passthrough-capture.conf>
+@@ -42,12 +44,14 @@ Define {
+ 	PDM1_MIC_B_ENABLE 1
+ 	DMIC0_HOST_PIPELINE_ID 100
+ 	DMIC0_DAI_PIPELINE_ID 101
+-	DMIC0_HOST_PIPELINE_SINK 'copier.host.100.1'
+-	DMIC0_DAI_PIPELINE_SRC 'copier.DMIC.101.1'
++	DMIC0_HOST_PIPELINE_SINK 'gain.100.1'
++	DMIC0_DAI_PIPELINE_SRC 'copier.module.101.2'
++	DMIC0_DAI_COPIER 'copier.DMIC.101.1'
++	DMIC0_DAI_GAIN 'gain.101.1'
+ 	DMIC0_NAME 'dmic01'
+ 	DMIC0_ID 4
+ 	DMIC1_ID 5
+-	DMIC0_PCM_CAPS 'Passthrough Capture 13'
++	DMIC0_PCM_CAPS 'Gain Capture 13'
+ 	DMIC0_PIPELINE_STREAM_NAME 'copier.DMIC.14.1'
+ 	USE_CHAIN_DMA	"false"
+ 	DEEP_BUFFER_PIPELINE_ID         15
+diff --git a/tools/topology/topology2/include/pipelines/cavs/gain-capture.conf b/tools/topology/topology2/include/pipelines/cavs/gain-capture.conf
+index 9a0d8d9310bb..c21e134de97e 100644
+--- a/tools/topology/topology2/include/pipelines/cavs/gain-capture.conf
++++ b/tools/topology/topology2/include/pipelines/cavs/gain-capture.conf
+@@ -87,22 +87,6 @@ Class.Pipeline."gain-capture" {
+ 			}
+ 		}
+ 
+-		copier."2" {
+-			type buffer
+-			copier_type	"module"
+-			num_audio_formats 2
+-			#16-bit 48KHz 2ch
+-			Object.Base.audio_format.1 {}
+-			# 32-bit 48KHz 2ch
+-			Object.Base.audio_format.2 {
+-				in_bit_depth		32
+-				in_valid_bit_depth	32
+-				out_bit_depth		32
+-				out_valid_bit_depth	32
+-				dma_buffer_size "$[$ibs * 2]"
+-			}
+-		}
+-
+ 		pipeline."1" {
+ 			priority	0
+ 			lp_mode		0
+@@ -111,10 +95,6 @@ Class.Pipeline."gain-capture" {
+ 
+ 	Object.Base {
+ 		route."1" {
+-			source	"copier.module..2"
+-			sink	"gain..1"
+-		}
+-		route."2" {
+ 			source	"gain..1"
+ 			sink	"copier.host..1"
+ 		}
+diff --git a/tools/topology/topology2/include/pipelines/cavs/gain-copier-capture.conf b/tools/topology/topology2/include/pipelines/cavs/gain-copier-capture.conf
+new file mode 100644
+index 000000000000..4c1126855903
+--- /dev/null
++++ b/tools/topology/topology2/include/pipelines/cavs/gain-copier-capture.conf
+@@ -0,0 +1,132 @@
++#
++# CAVS gain (volume) capture pipeline
++#
++# A simple gain (volume) pipeline. All attributes defined herein are namespaced
++# by alsatplg to "Object.Pipeline.gain-copier-capture.N.attribute_name".
++#
++# Usage: gain-copier-capture pipeline object can be instantiated as:
++#
++# Object.Pipeline.gain-copier-capture."N" {
++# 	format		"s16le"
++# 	period		1000
++# 	time_domain	"timer"
++# 	channels	2
++# 	rate		48000
++# }
++#
++# Where N is the unique pipeline ID within the same alsaconf node.
++#
++
++<include/common/audio_format.conf>
++<include/components/copier.conf>
++<include/components/gain.conf>
++<include/components/pipeline.conf>
++
++Class.Pipeline."gain-copier-capture" {
++
++	DefineAttribute."index" {}
++
++	<include/pipelines/pipeline-common.conf>
++
++	attributes {
++		!constructor [
++			"index"
++		]
++
++		!immutable [
++			"direction"
++		]
++
++		#
++		# gain-copier-capture objects instantiated within the same
++		# alsaconf node must have unique pipeline_id attribute
++		#
++		unique	"instance"
++	}
++
++	Object.Widget {
++		copier."1" {
++			copier_type	"host"
++			type	"aif_out"
++			num_audio_formats 3
++			# 16-bit 48KHz 2ch
++			Object.Base.audio_format.1 {
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				dma_buffer_size "$[$obs * 2]"
++			}
++			# 24-bit 48KHz 2ch
++			Object.Base.audio_format.2 {
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_bit_depth		32
++				out_valid_bit_depth	24
++				dma_buffer_size "$[$obs * 2]"
++			}
++			# 32-bit 48KHz 2ch
++			Object.Base.audio_format.3 {
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$obs * 2]"
++			}
++			node_type $HDA_HOST_INPUT_CLASS
++		}
++
++		gain."1" {
++			num_audio_formats 2
++			#16-bit 48KHz 2ch
++			Object.Base.audio_format.1 {}
++			# 32-bit 48KHz 2ch
++			Object.Base.audio_format.2 {
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_bit_depth		32
++				out_valid_bit_depth	32
++			}
++		}
++
++		copier."2" {
++			type buffer
++			copier_type	"module"
++			num_audio_formats 2
++			#16-bit 48KHz 2ch
++			Object.Base.audio_format.1 {}
++			# 32-bit 48KHz 2ch
++			Object.Base.audio_format.2 {
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++			}
++		}
++
++		pipeline."1" {
++			priority	0
++			lp_mode		0
++		}
++	}
++
++	Object.Base {
++		route."1" {
++			source	"copier.module..2"
++			sink	"gain..1"
++		}
++		route."2" {
++			source	"gain..1"
++			sink	"copier.host..1"
++		}
++	}
++
++	direction	"capture"
++	dynamic_pipeline 1
++	time_domain	"timer"
++	channels	2
++	channels_min	2
++	channels_max	2
++	rate		48000
++	rate_min	48000
++	rate_max	48000
++}
+diff --git a/tools/topology/topology2/platform/intel/dmic-generic.conf b/tools/topology/topology2/platform/intel/dmic-generic.conf
+index 77abca16a0ed..5c4706abdd4a 100644
+--- a/tools/topology/topology2/platform/intel/dmic-generic.conf
++++ b/tools/topology/topology2/platform/intel/dmic-generic.conf
+@@ -63,7 +63,7 @@ Object.Dai {
+ }
+ 
+ Object.Pipeline {
+-	passthrough-capture.100 {
++	gain-capture.100 {
+ 		format		$FORMAT
+ 		index 		$DMIC0_HOST_PIPELINE_ID
+ 		Object.Widget.pipeline.1 {
+@@ -71,12 +71,58 @@ Object.Pipeline {
+ 		}
+ 		Object.Widget.copier.1 {
+ 			stream_name $DMIC0_PCM_CAPS
++			num_audio_formats 2
++			Object.Base.audio_format.1 {
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++			}
++			Object.Base.audio_format.2 {
++				in_channels		4
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_channels		4
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++				in_ch_cfg	$CHANNEL_CONFIG_3_POINT_1
++				in_ch_map	$CHANNEL_MAP_3_POINT_1
++				out_ch_cfg	$CHANNEL_CONFIG_3_POINT_1
++				out_ch_map	$CHANNEL_MAP_3_POINT_1
++			}
++		}
++		Object.Widget.gain.1 {
++			num_audio_formats 2
++			Object.Base.audio_format.1 {
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++			}
++			Object.Base.audio_format.2 {
++				in_channels		4
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_channels		4
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++				in_ch_cfg	$CHANNEL_CONFIG_3_POINT_1
++				in_ch_map	$CHANNEL_MAP_3_POINT_1
++				out_ch_cfg	$CHANNEL_CONFIG_3_POINT_1
++				out_ch_map	$CHANNEL_MAP_3_POINT_1
++			}
++			Object.Control.mixer.1 {
++				name 'DMIC0 Capture Volume 1'
++			}
+ 		}
+ 	}
+ 
+-	passthrough-be.101 {
+-		direction	"capture"
+-		format 	$FORMAT
++
++	dai-copier-gain-module-copier-capture.101 {
+ 		index		$DMIC0_DAI_PIPELINE_ID
+ 		Object.Widget.pipeline.1 {
+ 			stream_name $DMIC0_PIPELINE_STREAM_NAME
+@@ -111,12 +157,70 @@ Object.Pipeline {
+ 				out_ch_map	$CHANNEL_MAP_3_POINT_1
+ 			}
+ 		}
++
++		Object.Widget.copier."2" {
++			stream_name $DMIC0_NAME
++			Object.Base.audio_format.1 {
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++			}
++			Object.Base.audio_format.2 {
++				in_channels		4
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_channels		4
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++				in_ch_cfg	$CHANNEL_CONFIG_3_POINT_1
++				in_ch_map	$CHANNEL_MAP_3_POINT_1
++				out_ch_cfg	$CHANNEL_CONFIG_3_POINT_1
++				out_ch_map	$CHANNEL_MAP_3_POINT_1
++			}
++		}
++
++		Object.Widget.gain.1 {
++			num_audio_formats 2
++
++			Object.Base.audio_format.1 {
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++			}
++			Object.Base.audio_format.2 {
++				in_channels		4
++				in_bit_depth		32
++				in_valid_bit_depth	32
++				out_channels		4
++				out_bit_depth		32
++				out_valid_bit_depth	32
++				dma_buffer_size "$[$ibs * 2]"
++				in_ch_cfg	$CHANNEL_CONFIG_3_POINT_1
++				in_ch_map	$CHANNEL_MAP_3_POINT_1
++				out_ch_cfg	$CHANNEL_CONFIG_3_POINT_1
++				out_ch_map	$CHANNEL_MAP_3_POINT_1
++			}
++			Object.Control.mixer.1 {
++				name 'Main Capture Volume'
++			}
++		}
+ 	}
+ }
+ 
+-Object.Base.route.100 {
+-	source $DMIC0_DAI_PIPELINE_SRC
+-        sink $DMIC0_HOST_PIPELINE_SINK
++Object.Base {
++	route.100 {
++		source $DMIC0_DAI_PIPELINE_SRC
++		sink $DMIC0_HOST_PIPELINE_SINK
++	}
++	route.101{
++		source $DMIC0_DAI_COPIER
++		sink $DMIC0_DAI_GAIN
++	}
+ }
+ 
+ Object.PCM {
+diff --git a/tools/topology/topology2/sof-hda-generic.conf b/tools/topology/topology2/sof-hda-generic.conf
+index 4427c4d07f17..53b5812cc2e2 100644
+--- a/tools/topology/topology2/sof-hda-generic.conf
++++ b/tools/topology/topology2/sof-hda-generic.conf
+@@ -14,6 +14,8 @@
+ <mixout-gain-dai-copier-playback.conf>
+ <dai-copier-gain-mixin-capture.conf>
+ <mixout-gain-host-copier-capture.conf>
++<dai-copier-gain-module-copier-capture.conf>
++<gain-capture.conf>
+ <deepbuffer-playback.conf>
+ <passthrough-be.conf>
+ <data.conf>
+@@ -35,6 +37,11 @@ Define {
+ 	PLATFORM "none"
+ 	NUM_DMICS 0
+ 	USE_CHAIN_DMA	"false"
++	DMIC0_HOST_PIPELINE_SINK 'gain.11.2'
++	DMIC0_DAI_PIPELINE_SRC 'copier.module.12.2'
++	DMIC0_DAI_COPIER 'copier.DMIC.12.1'
++	DMIC0_DAI_GAIN 'gain.12.1'
++	DMIC0_PCM_CAPS 'Gain Capture 11'
+ }
+ 
+ # override defaults with platform-specific config
+-- 
+2.25.1
+
